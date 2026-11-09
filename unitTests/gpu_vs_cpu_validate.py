@@ -13,7 +13,10 @@ emulation:
      exercises the volume/projection textures, the ramp filter and hipFFT, and the
      backprojection, end to end, and pins the absolute scale -- a wrong trilinear
      blend or a wrong hipFFT layout shifts the recovered value off 1.0.
-  3. Adjointness: <A f, g> == <f, A^T g>; a wrong blend breaks it.
+  3. Adjointness: <A f, g> == <f, A^T g> for a random f inside the field of
+     view; a wrong blend breaks it. Cone-beam VD pairs the Joseph forward
+     projector, which also projects voxels outside the field of view, with the
+     voxel-driven backprojector, which drops them, so f is zero outside it.
 """
 import sys, os
 import numpy as np
@@ -104,6 +107,7 @@ for igeom in range(6):
         # adjointness
         fr = arr(lc.allocate_volume())
         fr[:] = rng.random(fr.shape).astype(np.float32)
+        fr[:, ((yy - ny / 2.0) ** 2 + (xx - nx / 2.0) ** 2) >= (0.45 * min(ny, nx)) ** 2] = 0.0
         gr = arr(lc.allocate_projections())
         gr[:] = rng.random(gr.shape).astype(np.float32)
         Afr = arr(lc.allocate_projections())
