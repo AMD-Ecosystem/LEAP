@@ -154,6 +154,16 @@ if(LEAP_HIP)
     get_hipified_list("${SRC_CPP}" SRC_CPP)
     get_hipified_list("${HEADER}" HEADER)
     get_hipified_list("${SRC_CU}" SRC_CU)
+    # The hipify scripts report native paths; on Windows their backslashes
+    # would make file(GLOB_RECURSE) below walk the whole drive.
+    foreach(_list SRC_CPP HEADER SRC_CU)
+        set(_paths "")
+        foreach(_path IN LISTS ${_list})
+            file(TO_CMAKE_PATH "${_path}" _path)
+            list(APPEND _paths "${_path}")
+        endforeach()
+        set(${_list} "${_paths}")
+    endforeach()
     set_source_files_properties(${SRC_CPP} ${SRC_CU} PROPERTIES LANGUAGE HIP)
 endif()
 
