@@ -10,6 +10,10 @@ get_filename_component(HIPIFY_DIR ${CMAKE_CURRENT_LIST_DIR} DIRECTORY)
 
 include(CMakeParseArguments)
 
+# The scripts are run through the interpreter, because Windows cannot execute
+# a .py file directly.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
 # This is an internal function, NOT an API
 # TODO: Move this function into a separate file
 function(write_file_list FILE_SUFFIX INPUT_LIST)
@@ -40,7 +44,7 @@ function(update_list_with_hip_files FILE_SUFFIX)
   set(_SCRIPTS_DIR ${HIPIFY_DIR}/tools)
   set(_FULL_FILE_NAME "${CMAKE_BINARY_DIR}/${_temp_file_cuda_to_hip_list}_${FILE_SUFFIX}.txt")
   set(_EXE_COMMAND
-    ${_SCRIPTS_DIR}/replace_cuda_with_hip_files.py
+    ${Python3_EXECUTABLE} ${_SCRIPTS_DIR}/replace_cuda_with_hip_files.py
     --io-file ${_FULL_FILE_NAME}
     --dump-dict-file ${HIPIFY_DICT_FILE})
   execute_process(
@@ -82,7 +86,7 @@ function(hipify)
 
   if(HIPIFY_CONFIG_FILE)
     set(HIPIFY_COMMAND
-      ${HIPIFY_DIR}/hipify_cli.py
+      ${Python3_EXECUTABLE} ${HIPIFY_DIR}/hipify_cli.py
       --config-json ${HIPIFY_CONFIG_FILE}
       --dump-dict-file ${HIPIFY_DICT_FILE}
     )
@@ -91,7 +95,7 @@ function(hipify)
       set(HIPIFY_HIP_SOURCE_DIR ${HIPIFY_CUDA_SOURCE_DIR})
     endif()
     set(HIPIFY_COMMAND
-      ${HIPIFY_DIR}/hipify_cli.py
+      ${Python3_EXECUTABLE} ${HIPIFY_DIR}/hipify_cli.py
       --project-directory ${HIPIFY_CUDA_SOURCE_DIR}
       --output-directory ${HIPIFY_HIP_SOURCE_DIR}
       --header-include-dirs [${HIPIFY_HEADER_INCLUDE_DIR}]
