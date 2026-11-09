@@ -221,7 +221,6 @@ elseif (LEAP_HIP)
     target_compile_definitions(
         leapct PRIVATE
         __USE_GPU
-        __USE_NOTEX
         __INCLUDE_CUFFT
     )
     get_filename_component(_ROCM_ROOT "${hipfft_DIR}/../../.." ABSOLUTE)
@@ -242,6 +241,10 @@ else ()
     target_link_libraries(leapct
       OpenMP::OpenMP_CXX
     )
+endif()
+
+if ((LEAP_CUDA OR LEAP_HIP) AND LEAP_USE_NOTEX)
+    target_compile_definitions(leapct PRIVATE __USE_NOTEX)
 endif()
 
 target_compile_options(leapct PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:

@@ -12,7 +12,7 @@
 // no texture memory. This header provides a drop-in software emulation of the
 // texture fetches so the exact same kernels run on those devices.
 //
-// Selection is entirely compile-time:
+// Selection is compile-time, except between the two kinds on HIP:
 //   * default (NVIDIA / any GPU with texture memory): TEX_DATA is a
 //     cudaTextureObject_t and TEX3D/TEX1D expand to the hardware tex3D/tex1D
 //     intrinsics. The generated device code is byte-for-byte identical to
@@ -20,6 +20,10 @@
 //   * __USE_NOTEX: TEX_DATA becomes a small handle that carries a global-memory
 //     pointer plus the sampling metadata (extents, addressing mode, filter
 //     mode). TEX3D/TEX1D perform the interpolation in software.
+//   * HIP without __USE_NOTEX: TEX_DATA (hipTexture below) carries either a
+//     texture object or the __USE_NOTEX handle, and the loaders pick one per
+//     device at run time: texture objects on GPUs with image support, global
+//     memory on the others.
 //
 // The handle stores its extents in "extent order" (component 0 varies fastest,
 // matching the width axis of the cudaArray the hardware path allocates). The
@@ -35,7 +39,7 @@
 #ifndef __USE_CPU
 #include "cuda_runtime.h"
 
-#ifndef __USE_NOTEX
+#if !defined(__USE_NOTEX) && !defined(__HIP_PLATFORM_AMD__)
 //==============================================================================
 // Hardware texture path (default). Zero-cost aliases over the CUDA intrinsics.
 //==============================================================================
@@ -47,7 +51,8 @@ typedef cudaArray*          TEX_ARRAY;
 
 #else
 //==============================================================================
-// Software emulation path (__USE_NOTEX): sample from global memory.
+// Software emulation path (__USE_NOTEX, and HIP GPUs without image support):
+// sample from global memory.
 //==============================================================================
 
 // Addressing (extrapolation) and filtering modes, mirroring cudaTextureDesc.
@@ -68,11 +73,38 @@ struct softTexture
     int owns;          // 1 if freeTexture should cudaFree(data), 0 when aliasing caller memory
 };
 
+#ifdef __USE_NOTEX
 typedef softTexture TEX_DATA;
 typedef float*      TEX_ARRAY; // owns the backing buffer, or NULL when aliasing caller memory
 
 #define TEX3D(tex, x, y, z) leap_tex3D((tex), (x), (y), (z))
 #define TEX1D(tex, x)       leap_tex1D((tex), (x))
+#else
+//------------------------------------------------------------------------------
+// HIP. HIP has no linear filtering of float element-read textures, and gfx942
+// and gfx950 have no image support at all (the device compiler defines
+// __HIP_NO_IMAGE_SUPPORT for them and rejects the texture builtins). The handle
+// therefore carries either kind of texture:
+//   * GPUs with image support: tex is a point-filtered texture object and
+//     TEX3D/TEX1D blend the corner texels in software (leap_hip_tex3D below);
+//     the texture's address mode handles out-of-range texels.
+//   * GPUs without image support: tex is 0 and the softTexture fields describe
+//     a linear device buffer, sampled exactly as on the __USE_NOTEX path.
+// The device code of each target reads one kind, and the loaders in
+// cuda_utils.cu create the kind that the current device's code reads, so a
+// binary built for both kinds of GPU picks per device at run time.
+//------------------------------------------------------------------------------
+struct hipTexture : softTexture
+{
+    cudaTextureObject_t tex; // point-filtered texture object, or 0 for a linear buffer
+};
+
+typedef hipTexture TEX_DATA;
+typedef void*      TEX_ARRAY; // cudaArray* when tex != 0, else as on the __USE_NOTEX path
+
+#define TEX3D(tex, x, y, z) leap_hip_tex3D((tex), (x), (y), (z))
+#define TEX1D(tex, x)       leap_hip_tex1D((tex), (x))
+#endif
 
 #ifndef __LEAP_MIN
 #define __LEAP_MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -216,7 +248,68 @@ __host__ __device__ __forceinline__ float leap_tex1D(const softTexture& tex, flo
     }
 }
 
-#endif // __USE_NOTEX
+#ifndef __USE_NOTEX
+#if __HIP_NO_IMAGE_SUPPORT
+__device__ __forceinline__ float leap_hip_tex3D(const hipTexture& tex, float x, float y, float z)
+{
+    return leap_tex3D(tex, x, y, z);
+}
+
+__device__ __forceinline__ float leap_hip_tex1D(const hipTexture& tex, float x)
+{
+    return leap_tex1D(tex, x);
+}
+#else
+// The corners of a linear blend are point fetches at texel centres, using
+// CUDA's convention for unnormalized coordinates: a linear fetch at c blends
+// texels floor(c - 0.5) and floor(c - 0.5) + 1 with weight
+// (c - 0.5) - floor(c - 0.5). A coordinate that is not finite (e.g. a 0/0
+// detector-edge weight that the caller multiplies by zero) is replaced by a
+// finite one so that the result stays finite, as it does on CUDA hardware.
+__device__ __forceinline__ float leap_hip_tex3D(const hipTexture& tex, float x, float y, float z)
+{
+    if (tex.filter != TEX_LINEAR)
+        return tex3D<float>(tex.tex, x, y, z);
+    const float xs = isfinite(x) ? x - 0.5f : 0.0f;
+    const float ys = isfinite(y) ? y - 0.5f : 0.0f;
+    const float zs = isfinite(z) ? z - 0.5f : 0.0f;
+    const float x0 = floorf(xs), y0 = floorf(ys), z0 = floorf(zs);
+    const float fx = xs - x0, fy = ys - y0, fz = zs - z0;
+    const float ix0 = x0 + 0.5f, iy0 = y0 + 0.5f, iz0 = z0 + 0.5f;
+    const float ix1 = ix0 + 1.0f, iy1 = iy0 + 1.0f, iz1 = iz0 + 1.0f;
+
+    const float c000 = tex3D<float>(tex.tex, ix0, iy0, iz0);
+    const float c100 = tex3D<float>(tex.tex, ix1, iy0, iz0);
+    const float c010 = tex3D<float>(tex.tex, ix0, iy1, iz0);
+    const float c110 = tex3D<float>(tex.tex, ix1, iy1, iz0);
+    const float c001 = tex3D<float>(tex.tex, ix0, iy0, iz1);
+    const float c101 = tex3D<float>(tex.tex, ix1, iy0, iz1);
+    const float c011 = tex3D<float>(tex.tex, ix0, iy1, iz1);
+    const float c111 = tex3D<float>(tex.tex, ix1, iy1, iz1);
+
+    const float c00 = c000 + fx * (c100 - c000);
+    const float c10 = c010 + fx * (c110 - c010);
+    const float c01 = c001 + fx * (c101 - c001);
+    const float c11 = c011 + fx * (c111 - c011);
+    const float c0 = c00 + fy * (c10 - c00);
+    const float c1 = c01 + fy * (c11 - c01);
+    return c0 + fz * (c1 - c0);
+}
+
+__device__ __forceinline__ float leap_hip_tex1D(const hipTexture& tex, float x)
+{
+    if (tex.filter != TEX_LINEAR)
+        return tex1D<float>(tex.tex, x);
+    const float xs = isfinite(x) ? x - 0.5f : 0.0f;
+    const float x0 = floorf(xs);
+    const float fx = xs - x0;
+    const float c0 = tex1D<float>(tex.tex, x0 + 0.5f);
+    const float c1 = tex1D<float>(tex.tex, x0 + 1.5f);
+    return c0 + fx * (c1 - c0);
+}
+#endif // __HIP_NO_IMAGE_SUPPORT
+#endif // !__USE_NOTEX
+#endif // __USE_NOTEX || __HIP_PLATFORM_AMD__
 #endif // __USE_CPU
 
 #endif // __TEXTURE_COMPAT_H

@@ -1201,6 +1201,61 @@ dim3 setGridSize(int4 N, dim3 dimBlock)
     return setGridSize(make_int3(N.x, N.y, N.z), dimBlock);
 }
 
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__USE_NOTEX)
+#include <map>
+#include <mutex>
+
+// The kind of texture the device code of each target reads (see hipTexture in
+// texture_compat.h).
+#if __HIP_NO_IMAGE_SUPPORT
+__device__ int leapLinearTextureCode = 1;
+#else
+__device__ int leapLinearTextureCode = 0;
+#endif
+
+// Returns 1 if loadTexture* must fill a linear buffer for the current device,
+// 0 for a texture object, -1 on error. The choice follows the device's image
+// support and must agree with the device code loaded for it; if they disagree
+// no texture is created at all.
+static int leapUseLinearTexture()
+{
+    static std::mutex mutex;
+    static std::map<int, int> kinds;
+    int device = 0;
+    cudaError_t cudaStatus;
+    if ((cudaStatus = cudaGetDevice(&device)) != cudaSuccess)
+    {
+        printf("cudaGetDevice Error: %s\n", cudaGetErrorString(cudaStatus));
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(mutex);
+    std::map<int, int>::const_iterator it = kinds.find(device);
+    if (it != kinds.end())
+        return it->second;
+    int imageSupport = 0, linearCode = 0;
+    if ((cudaStatus = hipDeviceGetAttribute(&imageSupport, hipDeviceAttributeImageSupport, device)) != cudaSuccess ||
+        (cudaStatus = cudaMemcpyFromSymbol(&linearCode, leapLinearTextureCode, sizeof(int))) != cudaSuccess)
+    {
+        printf("texture kind query Error: %s\n", cudaGetErrorString(cudaStatus));
+        return -1;
+    }
+    int kind = imageSupport ? 0 : 1;
+    if (linearCode != kind)
+    {
+        printf("Error: GPU %d %s image support, but its device code reads %s\n", device, imageSupport ? "has" : "lacks", linearCode ? "linear buffers" : "texture objects");
+        kind = -1;
+    }
+    kinds[device] = kind;
+    return kind;
+}
+#define LEAP_LINEAR_TEXTURE leapUseLinearTexture()
+#define LEAP_TEX_HANDLE(t) ((t).tex)
+#elif defined(__USE_NOTEX)
+#define LEAP_LINEAR_TEXTURE 1
+#else
+#define LEAP_TEX_HANDLE(t) (t)
+#endif
+
 extern TEX_ARRAY loadTexture_from_cpu(TEX_DATA& tex_object, float* data, const int4 N_txt, bool useExtrapolation, bool useLinearInterpolation, bool swapFirstAndLastDimensions)
 {
     return loadTexture_from_cpu(tex_object, data, N_txt, make_int3(0, 0, 0), make_int3(N_txt.x, N_txt.y, N_txt.z), useExtrapolation, useLinearInterpolation, swapFirstAndLastDimensions);
@@ -1259,36 +1314,43 @@ TEX_ARRAY loadTexture_from_cpu(TEX_DATA& tex_object, float* data, const int3 N_t
     if (data == nullptr)
         return nullptr;
 
-#ifdef __USE_NOTEX
-    // Software path: repack the requested sub-region into a dense, extent-order
-    // device buffer (axis 0 = cols, fastest-varying) that the software sampler
-    // indexes as data[k*n1*n0 + j*n0 + i], matching hardware tex3D(t, i, j, k).
-    const long long nElem = (long long)N_txt.x * N_txt.y * N_txt.z;
-    float* dev_buf = nullptr;
-    if (cudaMalloc((void**)&dev_buf, (size_t)nElem * sizeof(float)) != cudaSuccess)
-    {
-        printf("loadTexture_from_cpu (NOTEX): cudaMalloc failed\n");
+#if defined(__USE_NOTEX) || defined(__HIP_PLATFORM_AMD__)
+    const int linearTexture = LEAP_LINEAR_TEXTURE;
+    if (linearTexture < 0)
         return nullptr;
-    }
+    if (linearTexture)
     {
-        float* host_dense = (float*)malloc((size_t)nElem * sizeof(float));
-        for (int d = 0; d < N_txt.x; d++)      // slowest axis (depth)
-            for (int h = 0; h < N_txt.y; h++)  // middle axis (rows)
-            {
-                const float* srow = data + ((long long)(srcPos.z + d) * srcShape.y + (srcPos.y + h)) * srcShape.z + srcPos.x;
-                float* drow = host_dense + ((long long)d * N_txt.y + h) * N_txt.z;
-                memcpy(drow, srow, (size_t)N_txt.z * sizeof(float));
-            }
-        cudaMemcpy(dev_buf, host_dense, (size_t)nElem * sizeof(float), cudaMemcpyHostToDevice);
-        free(host_dense);
+        // Software path: repack the requested sub-region into a dense, extent-order
+        // device buffer (axis 0 = cols, fastest-varying) that the software sampler
+        // indexes as data[k*n1*n0 + j*n0 + i], matching hardware tex3D(t, i, j, k).
+        const long long nElem = (long long)N_txt.x * N_txt.y * N_txt.z;
+        float* dev_buf = nullptr;
+        if (cudaMalloc((void**)&dev_buf, (size_t)nElem * sizeof(float)) != cudaSuccess)
+        {
+            printf("loadTexture_from_cpu (NOTEX): cudaMalloc failed\n");
+            return nullptr;
+        }
+        {
+            float* host_dense = (float*)malloc((size_t)nElem * sizeof(float));
+            for (int d = 0; d < N_txt.x; d++)      // slowest axis (depth)
+                for (int h = 0; h < N_txt.y; h++)  // middle axis (rows)
+                {
+                    const float* srow = data + ((long long)(srcPos.z + d) * srcShape.y + (srcPos.y + h)) * srcShape.z + srcPos.x;
+                    float* drow = host_dense + ((long long)d * N_txt.y + h) * N_txt.z;
+                    memcpy(drow, srow, (size_t)N_txt.z * sizeof(float));
+                }
+            cudaMemcpy(dev_buf, host_dense, (size_t)nElem * sizeof(float), cudaMemcpyHostToDevice);
+            free(host_dense);
+        }
+        tex_object.data = dev_buf;
+        tex_object.n0 = N_txt.z; tex_object.n1 = N_txt.y; tex_object.n2 = N_txt.x;
+        tex_object.address = useExtrapolation ? TEX_CLAMP : TEX_BORDER;
+        tex_object.filter  = useLinearInterpolation ? TEX_LINEAR : TEX_NEAREST;
+        tex_object.owns = 1;
+        return dev_buf;
     }
-    tex_object.data = dev_buf;
-    tex_object.n0 = N_txt.z; tex_object.n1 = N_txt.y; tex_object.n2 = N_txt.x;
-    tex_object.address = useExtrapolation ? TEX_CLAMP : TEX_BORDER;
-    tex_object.filter  = useLinearInterpolation ? TEX_LINEAR : TEX_NEAREST;
-    tex_object.owns = 1;
-    return dev_buf;
-#else
+#endif
+#ifndef __USE_NOTEX
     cudaArray* d_data_array = nullptr;
     cudaError_t cudaStatus;
 
@@ -1328,6 +1390,12 @@ TEX_ARRAY loadTexture_from_cpu(TEX_DATA& tex_object, float* data, const int3 N_t
         texDesc.addressMode[2] = (cudaTextureAddressMode)cudaAddressModeBorder;
     }
 
+#ifdef __HIP_PLATFORM_AMD__
+    // HIP cannot filter float element-read textures linearly: create the texture
+    // point-filtered and let TEX3D/TEX1D blend in software.
+    texDesc.filterMode = (cudaTextureFilterMode)cudaFilterModePoint;
+    tex_object.filter = useLinearInterpolation ? TEX_LINEAR : TEX_NEAREST;
+#else
     if (useLinearInterpolation)
     {
         texDesc.filterMode = (cudaTextureFilterMode)cudaFilterModeLinear;
@@ -1336,7 +1404,8 @@ TEX_ARRAY loadTexture_from_cpu(TEX_DATA& tex_object, float* data, const int3 N_t
     {
         texDesc.filterMode = (cudaTextureFilterMode)cudaFilterModePoint;
     }
-    if ((cudaStatus = cudaCreateTextureObject(&tex_object, &resDesc, &texDesc, nullptr)) != cudaSuccess)
+#endif
+    if ((cudaStatus = cudaCreateTextureObject(&LEAP_TEX_HANDLE(tex_object), &resDesc, &texDesc, nullptr)) != cudaSuccess)
     {
         printf("cudaCreateTextureObject Error: %s\n", cudaGetErrorString(cudaStatus));
         cudaFreeArray(d_data_array);
@@ -1362,7 +1431,7 @@ TEX_ARRAY loadTexture_from_cpu(TEX_DATA& tex_object, float* data, const int3 N_t
     {
         printf("cudaMemcpy3D Error: %s\n", cudaGetErrorString(cudaStatus));
         cudaFreeArray(d_data_array);
-        cudaDestroyTextureObject(tex_object);
+        cudaDestroyTextureObject(LEAP_TEX_HANDLE(tex_object));
         return nullptr;
     }
     //*/
@@ -1370,7 +1439,7 @@ TEX_ARRAY loadTexture_from_cpu(TEX_DATA& tex_object, float* data, const int3 N_t
     {
         printf("cudaMemcpy3D Error: %s\n", cudaGetErrorString(cudaStatus));
         cudaFreeArray(d_data_array);
-        cudaDestroyTextureObject(tex_object);
+        cudaDestroyTextureObject(LEAP_TEX_HANDLE(tex_object));
         return nullptr;
     }
     //###################################################################
@@ -1412,16 +1481,23 @@ TEX_ARRAY loadTexture(TEX_DATA& tex_object, float* dev_data, const int3 N_txt, b
     if (dev_data == nullptr)
         return nullptr;
 
-#ifdef __USE_NOTEX
-    // Software path: alias the caller's device buffer (already in extent order:
-    // axis 0 = N.z, fastest). No copy, so freeTexture must not release it.
-    tex_object.data = dev_data;
-    tex_object.n0 = N_txt.z; tex_object.n1 = N_txt.y; tex_object.n2 = N_txt.x;
-    tex_object.address = useExtrapolation ? TEX_CLAMP : TEX_BORDER;
-    tex_object.filter  = useLinearInterpolation ? TEX_LINEAR : TEX_NEAREST;
-    tex_object.owns = 0;
-    return dev_data; // non-NULL so existing "== nullptr" error checks still pass
-#else
+#if defined(__USE_NOTEX) || defined(__HIP_PLATFORM_AMD__)
+    const int linearTexture = LEAP_LINEAR_TEXTURE;
+    if (linearTexture < 0)
+        return nullptr;
+    if (linearTexture)
+    {
+        // Software path: alias the caller's device buffer (already in extent order:
+        // axis 0 = N.z, fastest). No copy, so freeTexture must not release it.
+        tex_object.data = dev_data;
+        tex_object.n0 = N_txt.z; tex_object.n1 = N_txt.y; tex_object.n2 = N_txt.x;
+        tex_object.address = useExtrapolation ? TEX_CLAMP : TEX_BORDER;
+        tex_object.filter  = useLinearInterpolation ? TEX_LINEAR : TEX_NEAREST;
+        tex_object.owns = 0;
+        return dev_data; // non-NULL so existing "== nullptr" error checks still pass
+    }
+#endif
+#ifndef __USE_NOTEX
     cudaArray* d_data_array = nullptr;
     cudaError_t cudaStatus;
 
@@ -1461,6 +1537,12 @@ TEX_ARRAY loadTexture(TEX_DATA& tex_object, float* dev_data, const int3 N_txt, b
         texDesc.addressMode[2] = (cudaTextureAddressMode)cudaAddressModeBorder;
     }
 
+#ifdef __HIP_PLATFORM_AMD__
+    // HIP cannot filter float element-read textures linearly: create the texture
+    // point-filtered and let TEX3D/TEX1D blend in software.
+    texDesc.filterMode = (cudaTextureFilterMode)cudaFilterModePoint;
+    tex_object.filter = useLinearInterpolation ? TEX_LINEAR : TEX_NEAREST;
+#else
     if (useLinearInterpolation)
     {
         texDesc.filterMode = (cudaTextureFilterMode)cudaFilterModeLinear;
@@ -1469,7 +1551,8 @@ TEX_ARRAY loadTexture(TEX_DATA& tex_object, float* dev_data, const int3 N_txt, b
     {
         texDesc.filterMode = (cudaTextureFilterMode)cudaFilterModePoint;
     }
-    if ((cudaStatus = cudaCreateTextureObject(&tex_object, &resDesc, &texDesc, nullptr)) != cudaSuccess)
+#endif
+    if ((cudaStatus = cudaCreateTextureObject(&LEAP_TEX_HANDLE(tex_object), &resDesc, &texDesc, nullptr)) != cudaSuccess)
     {
         printf("cudaCreateTextureObject Error: %s\n", cudaGetErrorString(cudaStatus));
         cudaFreeArray(d_data_array);
@@ -1488,7 +1571,7 @@ TEX_ARRAY loadTexture(TEX_DATA& tex_object, float* dev_data, const int3 N_txt, b
     {
         printf("cudaMemcpy3D Error: %s\n", cudaGetErrorString(cudaStatus));
         cudaFreeArray(d_data_array);
-        cudaDestroyTextureObject(tex_object);
+        cudaDestroyTextureObject(LEAP_TEX_HANDLE(tex_object));
         return nullptr;
     }
     return d_data_array;
@@ -1497,25 +1580,32 @@ TEX_ARRAY loadTexture(TEX_DATA& tex_object, float* dev_data, const int3 N_txt, b
 
 TEX_ARRAY loadTexture1D(TEX_DATA& tex_object, float* data, const int N_txt, bool useExtrapolation, bool useLinearInterpolation)
 {
-#ifdef __USE_NOTEX
-    // Software path: copy the 1D samples into an owned device buffer.
-    // cudaMemcpyDefault relies on UVA to accept either a host or device source.
-    if (data == nullptr)
+#if defined(__USE_NOTEX) || defined(__HIP_PLATFORM_AMD__)
+    const int linearTexture = LEAP_LINEAR_TEXTURE;
+    if (linearTexture < 0)
         return nullptr;
-    float* dev_buf = nullptr;
-    if (cudaMalloc((void**)&dev_buf, (size_t)N_txt * sizeof(float)) != cudaSuccess)
+    if (linearTexture)
     {
-        printf("loadTexture1D (NOTEX): cudaMalloc failed\n");
-        return nullptr;
+        // Software path: copy the 1D samples into an owned device buffer.
+        // cudaMemcpyDefault relies on UVA to accept either a host or device source.
+        if (data == nullptr)
+            return nullptr;
+        float* dev_buf = nullptr;
+        if (cudaMalloc((void**)&dev_buf, (size_t)N_txt * sizeof(float)) != cudaSuccess)
+        {
+            printf("loadTexture1D (NOTEX): cudaMalloc failed\n");
+            return nullptr;
+        }
+        cudaMemcpy(dev_buf, data, (size_t)N_txt * sizeof(float), cudaMemcpyDefault);
+        tex_object.data = dev_buf;
+        tex_object.n0 = N_txt; tex_object.n1 = 1; tex_object.n2 = 1;
+        tex_object.address = useExtrapolation ? TEX_CLAMP : TEX_BORDER;
+        tex_object.filter  = useLinearInterpolation ? TEX_LINEAR : TEX_NEAREST;
+        tex_object.owns = 1;
+        return dev_buf;
     }
-    cudaMemcpy(dev_buf, data, (size_t)N_txt * sizeof(float), cudaMemcpyDefault);
-    tex_object.data = dev_buf;
-    tex_object.n0 = N_txt; tex_object.n1 = 1; tex_object.n2 = 1;
-    tex_object.address = useExtrapolation ? TEX_CLAMP : TEX_BORDER;
-    tex_object.filter  = useLinearInterpolation ? TEX_LINEAR : TEX_NEAREST;
-    tex_object.owns = 1;
-    return dev_buf;
-#else
+#endif
+#ifndef __USE_NOTEX
     /*
     //int2 N_2d = make_int2(1, N_txt);
     int2 N_2d = make_int2(N_txt, 1);
@@ -1555,6 +1645,12 @@ TEX_ARRAY loadTexture1D(TEX_DATA& tex_object, float* data, const int N_txt, bool
         texDesc.addressMode[0] = (cudaTextureAddressMode)cudaAddressModeBorder;
     }
 
+#ifdef __HIP_PLATFORM_AMD__
+    // HIP cannot filter float element-read textures linearly: create the texture
+    // point-filtered and let TEX3D/TEX1D blend in software.
+    texDesc.filterMode = (cudaTextureFilterMode)cudaFilterModePoint;
+    tex_object.filter = useLinearInterpolation ? TEX_LINEAR : TEX_NEAREST;
+#else
     if (useLinearInterpolation)
     {
         texDesc.filterMode = (cudaTextureFilterMode)cudaFilterModeLinear;
@@ -1563,7 +1659,8 @@ TEX_ARRAY loadTexture1D(TEX_DATA& tex_object, float* data, const int N_txt, bool
     {
         texDesc.filterMode = (cudaTextureFilterMode)cudaFilterModePoint;
     }
-    if ((cudaStatus = cudaCreateTextureObject(&tex_object, &resDesc, &texDesc, nullptr)) != cudaSuccess)
+#endif
+    if ((cudaStatus = cudaCreateTextureObject(&LEAP_TEX_HANDLE(tex_object), &resDesc, &texDesc, nullptr)) != cudaSuccess)
     {
         printf("cudaCreateTextureObject Error: %s\n", cudaGetErrorString(cudaStatus));
         cudaFreeArray(d_data_array);
@@ -1574,7 +1671,7 @@ TEX_ARRAY loadTexture1D(TEX_DATA& tex_object, float* data, const int N_txt, bool
     {
         printf("cudaMemcpy3D Error: %s\n", cudaGetErrorString(cudaStatus));
         cudaFreeArray(d_data_array);
-        cudaDestroyTextureObject(tex_object);
+        cudaDestroyTextureObject(LEAP_TEX_HANDLE(tex_object));
         return nullptr;
     }
 
@@ -1588,23 +1685,30 @@ extern TEX_ARRAY loadTexture2D(TEX_DATA& tex_object, float* data, const int2 N_t
     if (data == nullptr)
         return nullptr;
 
-#ifdef __USE_NOTEX
-    // Software path: dense owned buffer, axis 0 = N_txt.y (fastest), axis 1 = N_txt.x.
-    const long long nElem = (long long)N_txt.x * N_txt.y;
-    float* dev_buf = nullptr;
-    if (cudaMalloc((void**)&dev_buf, (size_t)nElem * sizeof(float)) != cudaSuccess)
-    {
-        printf("loadTexture2D (NOTEX): cudaMalloc failed\n");
+#if defined(__USE_NOTEX) || defined(__HIP_PLATFORM_AMD__)
+    const int linearTexture = LEAP_LINEAR_TEXTURE;
+    if (linearTexture < 0)
         return nullptr;
+    if (linearTexture)
+    {
+        // Software path: dense owned buffer, axis 0 = N_txt.y (fastest), axis 1 = N_txt.x.
+        const long long nElem = (long long)N_txt.x * N_txt.y;
+        float* dev_buf = nullptr;
+        if (cudaMalloc((void**)&dev_buf, (size_t)nElem * sizeof(float)) != cudaSuccess)
+        {
+            printf("loadTexture2D (NOTEX): cudaMalloc failed\n");
+            return nullptr;
+        }
+        cudaMemcpy(dev_buf, data, (size_t)nElem * sizeof(float), cudaMemcpyDefault);
+        tex_object.data = dev_buf;
+        tex_object.n0 = N_txt.y; tex_object.n1 = N_txt.x; tex_object.n2 = 1;
+        tex_object.address = useExtrapolation ? TEX_CLAMP : TEX_BORDER;
+        tex_object.filter  = useLinearInterpolation ? TEX_LINEAR : TEX_NEAREST;
+        tex_object.owns = 1;
+        return dev_buf;
     }
-    cudaMemcpy(dev_buf, data, (size_t)nElem * sizeof(float), cudaMemcpyDefault);
-    tex_object.data = dev_buf;
-    tex_object.n0 = N_txt.y; tex_object.n1 = N_txt.x; tex_object.n2 = 1;
-    tex_object.address = useExtrapolation ? TEX_CLAMP : TEX_BORDER;
-    tex_object.filter  = useLinearInterpolation ? TEX_LINEAR : TEX_NEAREST;
-    tex_object.owns = 1;
-    return dev_buf;
-#else
+#endif
+#ifndef __USE_NOTEX
     cudaArray* d_data_array = nullptr;
     cudaError_t cudaStatus;
 
@@ -1638,6 +1742,12 @@ extern TEX_ARRAY loadTexture2D(TEX_DATA& tex_object, float* data, const int2 N_t
         texDesc.addressMode[1] = (cudaTextureAddressMode)cudaAddressModeBorder;
     }
 
+#ifdef __HIP_PLATFORM_AMD__
+    // HIP cannot filter float element-read textures linearly: create the texture
+    // point-filtered and let TEX3D/TEX1D blend in software.
+    texDesc.filterMode = (cudaTextureFilterMode)cudaFilterModePoint;
+    tex_object.filter = useLinearInterpolation ? TEX_LINEAR : TEX_NEAREST;
+#else
     if (useLinearInterpolation)
     {
         texDesc.filterMode = (cudaTextureFilterMode)cudaFilterModeLinear;
@@ -1646,7 +1756,8 @@ extern TEX_ARRAY loadTexture2D(TEX_DATA& tex_object, float* data, const int2 N_t
     {
         texDesc.filterMode = (cudaTextureFilterMode)cudaFilterModePoint;
     }
-    if ((cudaStatus = cudaCreateTextureObject(&tex_object, &resDesc, &texDesc, nullptr)) != cudaSuccess)
+#endif
+    if ((cudaStatus = cudaCreateTextureObject(&LEAP_TEX_HANDLE(tex_object), &resDesc, &texDesc, nullptr)) != cudaSuccess)
     {
         printf("cudaCreateTextureObject Error: %s\n", cudaGetErrorString(cudaStatus));
         cudaFreeArray(d_data_array);
@@ -1657,7 +1768,7 @@ extern TEX_ARRAY loadTexture2D(TEX_DATA& tex_object, float* data, const int2 N_t
     {
         printf("cudaMemcpy3D Error: %s\n", cudaGetErrorString(cudaStatus));
         cudaFreeArray(d_data_array);
-        cudaDestroyTextureObject(tex_object);
+        cudaDestroyTextureObject(LEAP_TEX_HANDLE(tex_object));
         return nullptr;
     }
 
@@ -1667,7 +1778,18 @@ extern TEX_ARRAY loadTexture2D(TEX_DATA& tex_object, float* data, const int2 N_t
 
 void freeTexture(TEX_ARRAY& tex_array, TEX_DATA& tex_object)
 {
-#ifdef __USE_NOTEX
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__USE_NOTEX)
+    if (tex_object.tex != 0)
+    {
+        if (tex_array != nullptr)
+            cudaFreeArray((cudaArray*)tex_array);
+        cudaDestroyTextureObject(tex_object.tex);
+    }
+    else if (tex_object.owns && tex_array != nullptr)
+        cudaFree(tex_array);
+    tex_array = nullptr;
+    tex_object = TEX_DATA();
+#elif defined(__USE_NOTEX)
     // Only release buffers that loadTexture* allocated; aliased caller memory
     // (owns == 0, e.g. the device loadTexture path) is left for the caller.
     if (tex_object.owns && tex_array != nullptr)

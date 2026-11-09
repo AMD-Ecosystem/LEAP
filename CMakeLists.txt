@@ -64,6 +64,8 @@ else ()
     message(FATAL_ERROR "CMake scripting error: ${LEAP_GPU} didn't match.")
 endif ()
 
+option(LEAP_USE_NOTEX "Sample from global memory instead of texture objects on every GPU" OFF)
+
 if((BUILD_TESTING) OR (NOT DEFINED BUILD_TESTING))
     ENABLE_TESTING()
 endif()
