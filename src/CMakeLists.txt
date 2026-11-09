@@ -256,6 +256,13 @@ else ()
     )
 endif()
 
+if (WIN32 AND LEAP_HIP)
+    # clang defines _WIN32 but not WIN32, and drops a dllimport that a
+    # definition contradicts instead of exporting it as MSVC does, so the
+    # headers need both macros for the C interface to be exported.
+    target_compile_definitions(leapct PRIVATE WIN32 PROJECTOR_EXPORTS)
+endif()
+
 if ((LEAP_CUDA OR LEAP_HIP) AND LEAP_USE_NOTEX)
     target_compile_definitions(leapct PRIVATE __USE_NOTEX)
 endif()
