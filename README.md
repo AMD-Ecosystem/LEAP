@@ -58,6 +58,12 @@ python -m pip install -e . -Ccmake.define.LEAP_GPU=NVIDIA
 python -m pip install -e . -Ccmake.define.LEAP_GPU=AMD
 ```
 
+On Windows, the AMD build needs the ROCm SDK, either installed into the same Python
+environment (the `rocm[devel]` wheels) or as the AMD HIP SDK (which sets `HIP_PATH`), plus
+the Visual Studio C++ build tools and CMake 3.29 or newer. The same command then builds with
+ROCm's `clang++` for the GPUs in the machine; set `CMAKE_HIP_ARCHITECTURES` (for example
+`-Ccmake.define.CMAKE_HIP_ARCHITECTURES=gfx1151`) to build for other GPUs.
+
 ### Building wheels
 
 Build a wheel from a checkout with Python's standard build frontend:
