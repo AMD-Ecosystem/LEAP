@@ -17,6 +17,13 @@ emulation:
      view; a wrong blend breaks it. Cone-beam VD pairs the Joseph forward
      projector, which also projects voxels outside the field of view, with the
      voxel-driven backprojector, which drops them, so f is zero outside it.
+
+Two more checks cover callers that free or overwrite the buffer a texture was
+loaded from, which must not change what the texture returns:
+
+  4. consistency_cost of consistent cone-beam data is smallest at the true
+     detector center.
+  5. Attenuated backprojection of host data is adjoint to attenuated projection.
 """
 import sys, os
 import numpy as np
@@ -123,6 +130,51 @@ for igeom in range(6):
         results.append((geom_names[igeom], method, ok))
         print(f"{geom_names[igeom]:13s} {method}  finite={ok_finite}  fbp_interior={recon_val:.4f}"
               f" (err {fbp_err:.3f})  adjoint={adj:.2e}  {'PASS' if ok else 'FAIL'}", flush=True)
+
+# geometric calibration cost: minimum at the true detector center
+lc = tomographicModels()
+lc.set_conebeam(180, 133, 128, 1.0, 1.0, 0.5 * (133 - 1), 0.5 * (128 - 1), lc.setAngleArray(180, 360.0), 500.0, 1000.0)
+lc.set_default_volume()
+lc.set_gpu(0)
+lc.set_projector("SF")
+f = arr(lc.allocate_volume())
+lc.set_FORBILD(f, False)
+g = arr(lc.allocate_projections())
+lc.project(g, f)
+costs = [float(lc.consistency_cost(g, 0.0, d, 0.0, 0.0)) for d in (-3.0, 0.0, 3.0)]
+ok = all(np.isfinite(costs)) and 0.0 <= costs[1] < 0.1 * min(costs[0], costs[2])
+fail = fail or not ok
+results.append(("consistency", "", ok))
+print(f"{'consistency':13s}     cost(-3, 0, 3)={costs[0]:.4g}, {costs[1]:.4g}, {costs[2]:.4g}  {'PASS' if ok else 'FAIL'}", flush=True)
+
+# attenuated parallel-beam projector, data on the CPU
+lc = tomographicModels()
+set_geometry(lc, 0)
+lc.set_default_volume(1.0)
+lc.set_gpu(0)
+f = arr(lc.allocate_volume())
+nz, ny, nx = f.shape
+yy, xx = np.mgrid[0:ny, 0:nx]
+fov = ((yy - ny / 2.0) ** 2 + (xx - nx / 2.0) ** 2) < (0.45 * min(ny, nx)) ** 2
+mu = np.zeros_like(f)
+mu[:, fov] = 0.01
+lc.set_attenuationMap(mu)
+fr = arr(lc.allocate_volume())
+fr[:] = rng.random(fr.shape).astype(np.float32)
+fr[:, ~fov] = 0.0
+gr = arr(lc.allocate_projections())
+gr[:] = rng.random(gr.shape).astype(np.float32)
+Afr = arr(lc.allocate_projections())
+lc.project(Afr, fr)
+Atgr = arr(lc.allocate_volume())
+lc.backproject(gr, Atgr)
+lhs = float(np.sum(Afr * gr))
+rhs = float(np.sum(fr * Atgr))
+adj = abs(lhs - rhs) / (abs(rhs) or 1.0)
+ok = finite(Atgr) and adj < ADJ_TOL
+fail = fail or not ok
+results.append(("attenuated", "", ok))
+print(f"{'attenuated':13s}     finite={finite(Atgr)}  adjoint={adj:.2e}  {'PASS' if ok else 'FAIL'}", flush=True)
 
 print("\n==== SUMMARY ====")
 for name, method, ok in results:

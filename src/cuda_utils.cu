@@ -1487,14 +1487,29 @@ TEX_ARRAY loadTexture(TEX_DATA& tex_object, float* dev_data, const int3 N_txt, b
         return nullptr;
     if (linearTexture)
     {
-        // Software path: alias the caller's device buffer (already in extent order:
-        // axis 0 = N.z, fastest). No copy, so freeTexture must not release it.
-        tex_object.data = dev_data;
+        // Software path: copy the caller's device buffer (already in extent order:
+        // axis 0 = N.z, fastest) into an owned buffer, as the texture path copies it
+        // into a cudaArray; callers free or overwrite dev_data while the texture is live.
+        const long long nElem = (long long)N_txt.x * N_txt.y * N_txt.z;
+        float* dev_buf = nullptr;
+        cudaError_t cudaStatus;
+        if ((cudaStatus = cudaMalloc((void**)&dev_buf, (size_t)nElem * sizeof(float))) != cudaSuccess)
+        {
+            printf("loadTexture (NOTEX): cudaMalloc Error: %s\n", cudaGetErrorString(cudaStatus));
+            return nullptr;
+        }
+        if ((cudaStatus = cudaMemcpy(dev_buf, dev_data, (size_t)nElem * sizeof(float), cudaMemcpyDeviceToDevice)) != cudaSuccess)
+        {
+            printf("loadTexture (NOTEX): cudaMemcpy Error: %s\n", cudaGetErrorString(cudaStatus));
+            cudaFree(dev_buf);
+            return nullptr;
+        }
+        tex_object.data = dev_buf;
         tex_object.n0 = N_txt.z; tex_object.n1 = N_txt.y; tex_object.n2 = N_txt.x;
         tex_object.address = useExtrapolation ? TEX_CLAMP : TEX_BORDER;
         tex_object.filter  = useLinearInterpolation ? TEX_LINEAR : TEX_NEAREST;
-        tex_object.owns = 0;
-        return dev_data; // non-NULL so existing "== nullptr" error checks still pass
+        tex_object.owns = 1;
+        return dev_buf;
     }
 #endif
 #ifndef __USE_NOTEX
@@ -1790,8 +1805,7 @@ void freeTexture(TEX_ARRAY& tex_array, TEX_DATA& tex_object)
     tex_array = nullptr;
     tex_object = TEX_DATA();
 #elif defined(__USE_NOTEX)
-    // Only release buffers that loadTexture* allocated; aliased caller memory
-    // (owns == 0, e.g. the device loadTexture path) is left for the caller.
+    // Only release buffers that loadTexture* allocated.
     if (tex_object.owns && tex_array != nullptr)
         cudaFree((void*)tex_array);
     tex_array = nullptr;
