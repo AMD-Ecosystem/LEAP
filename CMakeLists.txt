@@ -2,6 +2,10 @@
 # the argument CUDA_ARCHITECTURES all-major
 cmake_minimum_required(VERSION 3.23 FATAL_ERROR)
 
+if(CMAKE_HOST_WIN32 AND "${LEAP_GPU}" MATCHES "^[Aa][Mm][Dd]$")
+    include(cmake/LeapWindowsHip.cmake)
+endif()
+
 project(leapct LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -53,6 +57,10 @@ elseif (LEAP_GPU STREQUAL "AMD")
     # Users are advised to set CMAKE_HIP_ARCHITECTURES to a minimal subset.
     # See also https://rocm.docs.amd.com/en/latest/conceptual/cmake-packages.html#using-hip-in-cmake
     enable_language(HIP)
+    if(WIN32)
+        # find_package(hip) and find_package(hipfft) look in the HIP compiler's ROCm.
+        list(APPEND CMAKE_PREFIX_PATH "${CMAKE_HIP_COMPILER_ROCM_ROOT}")
+    endif()
     set(LEAP_HIP ON)
     set(LEAP_ORIGINAL_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
     set(LEAP_HIPIFIED_SRC_DIR "${CMAKE_CURRENT_BINARY_DIR}/hipified_src")
