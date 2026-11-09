@@ -256,8 +256,8 @@ bool bilateralFilter(float* f, int N_1, int N_2, int N_3, float spatialFWHM, flo
     if (sliceStart > sliceEnd)
         return false;
 
-    spatialFWHM = float(max(0.25, min(100.0, spatialFWHM)));
-    intensityFWHM = float(max(1.0e-8, min(1.0e8, intensityFWHM)));
+    spatialFWHM = float(fmax(0.25, fmin(100.0, double(spatialFWHM))));
+    intensityFWHM = float(fmax(1.0e-8, fmin(1.0e8, double(intensityFWHM))));
 
     // convert FWHM input parameters to sigmas
     float sigma_d_sq = float(spatialFWHM / (2.0 * sqrt(2.0 * log(2.0))));
@@ -365,8 +365,8 @@ bool priorBilateralFilter(float* f, int N_1, int N_2, int N_3, float spatialFWHM
     if (sliceStart > sliceEnd)
         return false;
 
-    spatialFWHM = float(max(0.25, min(100.0, spatialFWHM)));
-    intensityFWHM = float(max(1.0e-8, min(1.0e8, intensityFWHM)));
+    spatialFWHM = float(fmax(0.25, fmin(100.0, double(spatialFWHM))));
+    intensityFWHM = float(fmax(1.0e-8, fmin(1.0e8, double(intensityFWHM))));
 
     // convert FWHM input parameters to sigmas
     float sigma_d_sq = float(spatialFWHM / (2.0 * sqrt(2.0 * log(2.0))));
@@ -488,8 +488,8 @@ bool scaledBilateralFilter(float* f, int N_1, int N_2, int N_3, float spatialFWH
     if (sliceStart > sliceEnd)
         return false;
 
-    spatialFWHM = float(max(0.25, min(100.0, spatialFWHM)));
-    intensityFWHM = float(max(1.0e-8, min(1.0e8, intensityFWHM)));
+    spatialFWHM = float(fmax(0.25, fmin(100.0, double(spatialFWHM))));
+    intensityFWHM = float(fmax(1.0e-8, fmin(1.0e8, double(intensityFWHM))));
 
     // convert FWHM input parameters to sigmas
     float sigma_d_sq = float(spatialFWHM / (2.0 * sqrt(2.0 * log(2.0))));

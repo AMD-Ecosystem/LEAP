@@ -2919,7 +2919,7 @@ bool setConstantMemoryGeometryParameters_eSF(parameters* params)
     float phi_start = params->get_phi_start();
     float phi_end = params->get_phi_end();
 
-    float v_abs_max_inv = 1.0 / max(fabs(v_min), fabs(v_max));
+    float v_abs_max_inv = 1.0 / fmaxf(fabs(v_min), fabs(v_max));
 
     cudaMemcpyToSymbol(d_q_helical, &q_helical, sizeof(float));
     cudaMemcpyToSymbol(d_v_min, &v_min, sizeof(float));

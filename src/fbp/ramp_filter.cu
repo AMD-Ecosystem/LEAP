@@ -1104,7 +1104,7 @@ cufftComplex* HilbertTransformFrequencyResponse(int N, parameters* params, float
         {
             //float omega = float(i)*PI / N_over2;
             float omega = float(i) * PI / N;
-            float theWeight = pow(max(0.0, cos(omega)), 2.0 * theExponent);
+            float theWeight = pow(fmax(0.0, double(cos(omega))), 2.0 * theExponent);
 
             H_Hilb[i].x *= theWeight;
             H_Hilb[i].y *= theWeight;
@@ -1194,7 +1194,7 @@ float* rampFilterFrequencyResponseMagnitude(int N, parameters* params)
         {
             //float omega = float(i)*PI / N_over2;
             float omega = float(i) * PI / N;
-            float theWeight = pow(max(0.0, cos(omega)), 2.0 * theExponent);
+            float theWeight = pow(fmax(0.0, double(cos(omega))), 2.0 * theExponent);
 
             H_real[i] *= theWeight;
             //printf("H(%f) = %f (%d)\n", omega, theWeight, i);
@@ -2378,7 +2378,7 @@ bool parallelRay_derivative(float*& g, parameters* params, bool data_on_cpu)
     setProjectionGPUparams(params, N_g, T_g, startVal_g, true);
 
     //float epsilon = float(std::min(0.01, T_g.z / (4.0 * fabs(params->T_phi()))));
-    float epsilon = float(std::min(0.5, T_g.z / (4.0 * fabs(params->T_phi()))));
+    float epsilon = float(fmin(0.5, T_g.z / (4.0 * fabs(params->T_phi()))));
 
     float* dev_g = 0;
     float* dev_Dg = 0;
@@ -2453,9 +2453,9 @@ bool parallelRay_derivative_chunk(float*& g, parameters* params, bool data_on_cp
     setProjectionGPUparams(params, N_g, T_g, startVal_g, true);
 
     //float epsilon = float(std::min(0.01, T_g.z / (4.0 * fabs(params->T_phi()))));
-    float epsilon = float(std::min(0.5, T_g.z / (4.0 * fabs(params->T_phi()))));
+    float epsilon = float(fmin(0.5, T_g.z / (4.0 * fabs(params->T_phi()))));
     if (params->helicalFilterParameter > 0.0)
-        epsilon = float(std::min(float(0.5), params->helicalFilterParameter));
+        epsilon = fminf(0.5f, params->helicalFilterParameter);
     //float epsilon = T_g.z / (4.0 * fabs(params->T_phi()));
     //printf("elsilon = %f\n", epsilon);
     //epsilon = 0.026044*0.5;

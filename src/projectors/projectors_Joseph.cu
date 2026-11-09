@@ -2359,8 +2359,8 @@ bool backproject_Joseph_modular(float* g, float*& f, parameters* params, bool da
     int4 N_g; float4 T_g; float4 startVal_g;
     setProjectionGPUparams(params, N_g, T_g, startVal_g, false);
 
-    double alpha = max(atan(0.5 * (params->numCols - 1) * params->pixelWidth / params->sdd), atan(0.5 * (params->numRows - 1) * params->pixelHeight / params->sdd));
-    double rFOV = max(params->furthestFromCenter(), max(fabs(params->z_0()), fabs(params->z_samples(params->numZ - 1))));
+    double alpha = fmax(atan(0.5 * (params->numCols - 1) * params->pixelWidth / params->sdd), atan(0.5 * (params->numRows - 1) * params->pixelHeight / params->sdd));
+    double rFOV = fmaxf(params->furthestFromCenter(), fmaxf(fabs(params->z_0()), fabs(params->z_samples(params->numZ - 1))));
     double maxDivergence = tan(alpha) * (params->sdd + rFOV) - tan(alpha) * (params->sdd - rFOV);
     //double maxTravel = maxDivergence / min(params->pixelWidth, params->pixelHeight);
     double maxTravel = maxDivergence / params->voxelWidth;

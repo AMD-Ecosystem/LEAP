@@ -720,7 +720,7 @@ float getAvailableGPUmemory(std::vector<int> whichGPUs)
     {
         float retVal = getAvailableGPUmemory(whichGPUs[0]);
         for (int i = 1; i < int(whichGPUs.size()); i++)
-            retVal = std::min(retVal, getAvailableGPUmemory(whichGPUs[i]));
+            retVal = fminf(retVal, getAvailableGPUmemory(whichGPUs[i]));
         return retVal;
     }
 }
@@ -748,8 +748,8 @@ float getAvailableGPUmemory(int whichGPU)
             }
             freeGB = float(double(free_byte) / pow(2.0, 30.0));
         }
-        freeGB = min(max_gpu_memory, freeGB);
-        freeGB = max(freeGB * GPU_MEMORY_SAFETY_MULTIPLIER, freeGB - 0.5);
+        freeGB = fminf(max_gpu_memory, freeGB);
+        freeGB = fmax(freeGB * GPU_MEMORY_SAFETY_MULTIPLIER, freeGB - 0.5);
         return freeGB;
     }
     else

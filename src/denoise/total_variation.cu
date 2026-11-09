@@ -1064,7 +1064,7 @@ bool diffuse_sqs(float* f, int N_1, int N_2, int N_3, float beta, float delta, f
     if (delta < 1.0e-8)
         delta = float(1.0e-8);
     float total_weight = 2.0*(6.0 + 8.0/sqrt(3.0) + 12.0/sqrt(2.0));
-    beta = min(2.0, beta) / total_weight;
+    beta = fmin(2.0, double(beta)) / total_weight;
 
     cudaSetDevice(whichGPU);
     setConstantMemoryParameters(delta, p);
