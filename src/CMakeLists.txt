@@ -228,10 +228,13 @@ elseif (LEAP_HIP)
       ${_ROCM_ROOT}/include
       ${_ROCM_ROOT}/include/hipfft
     )
+    # Every source is compiled as HIP, but OpenMP::OpenMP_CXX only covers CXX
+    # sources (and the host compiler's runtime), so use the HIP compiler's OpenMP.
+    target_compile_options(leapct PRIVATE $<$<COMPILE_LANGUAGE:HIP>:-fopenmp>)
+    target_link_options(leapct PRIVATE -fopenmp)
     target_link_libraries(leapct
       hip::host
       hip::hipfft
-      OpenMP::OpenMP_CXX
     )
 else ()
     target_compile_definitions(
