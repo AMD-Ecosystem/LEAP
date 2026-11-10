@@ -13,6 +13,12 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     message(FATAL_ERROR "The \"${CMAKE_GENERATOR}\" generator does not support HIP; configure with -G Ninja.")
 endif()
 
+# pip's isolated build sets PYTHONPATH so that Python processes do not see the
+# environment's own packages. A pip-installed ROCm SDK's hipconfig, which this
+# file, CMake and hipify run during the configure, needs them.
+unset(ENV{PYTHONPATH})
+unset(ENV{PYTHONNOUSERSITE})
+
 if(NOT CMAKE_HIP_COMPILER AND NOT "$ENV{HIPCXX}" STREQUAL "")
     set(CMAKE_HIP_COMPILER "$ENV{HIPCXX}")
 endif()
@@ -32,10 +38,7 @@ if(NOT CMAKE_HIP_COMPILER)
         PATH_SUFFIXES bin)
     set(_leap_hip_clang_dir)
     if(LEAP_HIPCONFIG)
-        # pip's isolated build sets PYTHONPATH to hide the environment's own
-        # packages, which would stop a pip-installed hipconfig from loading.
-        execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=PYTHONPATH --unset=PYTHONNOUSERSITE
-                "${LEAP_HIPCONFIG}" --hipclangpath
+        execute_process(COMMAND "${LEAP_HIPCONFIG}" --hipclangpath
             OUTPUT_VARIABLE _leap_hip_clang_dir
             OUTPUT_STRIP_TRAILING_WHITESPACE
             ERROR_QUIET)
@@ -51,6 +54,30 @@ endif()
 
 if(CMAKE_HIP_COMPILER AND NOT DEFINED CMAKE_CXX_COMPILER)
     set(CMAKE_CXX_COMPILER "${CMAKE_HIP_COMPILER}")
+endif()
+
+# CMake enables RC for clang++ on Windows. Outside a Visual Studio developer
+# prompt rc.exe is not on PATH, so take it from the newest Windows SDK.
+if(NOT DEFINED CMAKE_RC_COMPILER AND "$ENV{RC}" STREQUAL "")
+    find_program(LEAP_RC_COMPILER rc)
+    if(NOT LEAP_RC_COMPILER)
+        cmake_host_system_information(RESULT _leap_kits_root QUERY WINDOWS_REGISTRY
+            "HKLM/SOFTWARE/Microsoft/Windows Kits/Installed Roots" VALUE KitsRoot10)
+        file(GLOB _leap_rc_compilers "${_leap_kits_root}/bin/10.*/x64/rc.exe")
+        if(_leap_rc_compilers)
+            list(SORT _leap_rc_compilers COMPARE NATURAL ORDER DESCENDING)
+            list(GET _leap_rc_compilers 0 _leap_rc_compiler)
+            set(CMAKE_RC_COMPILER "${_leap_rc_compiler}" CACHE FILEPATH "RC compiler")
+        endif()
+    endif()
+endif()
+
+# FindOpenMP locates libomp.lib for clang++ on Windows only through the LIB
+# variable of a Visual Studio developer prompt. Every source here is compiled
+# as HIP and linked with clang's own -fopenmp, which adds libomp itself.
+if(NOT DEFINED OpenMP_CXX_FLAGS AND NOT DEFINED OpenMP_CXX_LIB_NAMES)
+    set(OpenMP_CXX_FLAGS "-fopenmp" CACHE STRING "CXX compiler flags for OpenMP parallelization")
+    set(OpenMP_CXX_LIB_NAMES "" CACHE STRING "CXX compiler libraries for OpenMP parallelization")
 endif()
 
 # CMake picks the build machine's GPUs with rocm_agent_enumerator, which ROCm
