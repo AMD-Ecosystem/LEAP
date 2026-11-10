@@ -19,17 +19,22 @@ from scikit_build_core.build import *  # noqa: F401,F403
 def _use_ninja(config_settings, state):
     if sys.platform != "win32":
         return
-    from scikit_build_core.builder.generator import parse_generator
-    from scikit_build_core.settings.skbuild_read_settings import SettingsReader
+    # These scikit-build-core internals are not part of its backend API. If a
+    # release moves them, leave the build to scikit-build-core unchanged.
+    try:
+        from scikit_build_core.builder.generator import parse_generator
+        from scikit_build_core.settings.skbuild_read_settings import SettingsReader
 
-    settings = SettingsReader.from_file("pyproject.toml", config_settings, state=state).settings
-    args = [*settings.cmake.args, *shlex.split(os.environ.get("CMAKE_ARGS", ""))]
-    gpu = str(settings.cmake.define.get("LEAP_GPU", ""))
-    for prev, arg in zip(["", *args], args):
-        if prev == "-D" or arg.startswith("-D"):
-            match = re.fullmatch(r"(?:-D)?LEAP_GPU(?::\w+)?=(.*)", arg)
-            gpu = match.group(1) if match else gpu
-    chosen = parse_generator(args) or "CMAKE_GENERATOR" in settings.cmake.define or os.environ.get("CMAKE_GENERATOR")
+        settings = SettingsReader.from_file("pyproject.toml", config_settings, state=state).settings
+        args = [*settings.cmake.args, *shlex.split(os.environ.get("CMAKE_ARGS", ""))]
+        gpu = str(settings.cmake.define.get("LEAP_GPU", ""))
+        for prev, arg in zip(["", *args], args):
+            if prev == "-D" or arg.startswith("-D"):
+                match = re.fullmatch(r"(?:-D)?LEAP_GPU(?::\w+)?=(.*)", arg)
+                gpu = match.group(1) if match else gpu
+        chosen = parse_generator(args) or "CMAKE_GENERATOR" in settings.cmake.define or os.environ.get("CMAKE_GENERATOR")
+    except Exception:
+        return
     if re.fullmatch("amd", gpu, re.IGNORECASE) and not chosen:
         os.environ["CMAKE_ARGS"] = " ".join(filter(None, [os.environ.get("CMAKE_ARGS"), "-GNinja"]))
 
