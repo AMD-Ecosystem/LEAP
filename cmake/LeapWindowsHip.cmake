@@ -52,7 +52,7 @@ endif()
 
 # CMake picks the build machine's GPUs with rocm_agent_enumerator, which ROCm
 # does not ship on Windows; amdgpu-arch, next to clang++, reports the same.
-if(CMAKE_HIP_COMPILER AND NOT DEFINED CMAKE_HIP_ARCHITECTURES AND "$ENV{HIPARCHS}" STREQUAL "")
+if(CMAKE_HIP_COMPILER AND NOT DEFINED CMAKE_HIP_ARCHITECTURES)
     get_filename_component(_leap_hip_clang_dir "${CMAKE_HIP_COMPILER}" DIRECTORY)
     find_program(LEAP_AMDGPU_ARCH amdgpu-arch HINTS "${_leap_hip_clang_dir}" NO_DEFAULT_PATH)
     if(LEAP_AMDGPU_ARCH)
