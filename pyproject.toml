@@ -1,6 +1,7 @@
 [build-system]
 requires = ["scikit-build-core>=1.0"]
-build-backend = "scikit_build_core.build"
+build-backend = "leap_build_backend"
+backend-path = ["scripts"]
 
 [project]
 name = "leapct"
@@ -87,13 +88,6 @@ wheel.build-tag = 0
 
 [tool.scikit-build.cmake.define]
 BUILD_TESTING = false
-
-# CMake's Visual Studio generators do not support the HIP language, so a
-# Windows build that fails under one (an AMD GPU build) is retried with Ninja.
-[[tool.scikit-build.overrides]]
-if.platform-system = "^win32"
-if.failed = true
-cmake.define.CMAKE_GENERATOR = "Ninja"
 
 [tool.setuptools_scm]
 # Ref https://setuptools-scm.readthedocs.io/en/latest/config/#configuration-parameters
