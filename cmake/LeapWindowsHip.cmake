@@ -32,7 +32,10 @@ if(NOT CMAKE_HIP_COMPILER)
         PATH_SUFFIXES bin)
     set(_leap_hip_clang_dir)
     if(LEAP_HIPCONFIG)
-        execute_process(COMMAND "${LEAP_HIPCONFIG}" --hipclangpath
+        # pip's isolated build sets PYTHONPATH to hide the environment's own
+        # packages, which would stop a pip-installed hipconfig from loading.
+        execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=PYTHONPATH --unset=PYTHONNOUSERSITE
+                "${LEAP_HIPCONFIG}" --hipclangpath
             OUTPUT_VARIABLE _leap_hip_clang_dir
             OUTPUT_STRIP_TRAILING_WHITESPACE
             ERROR_QUIET)
